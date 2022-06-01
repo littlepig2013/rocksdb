@@ -512,7 +512,7 @@ Status VersionEdit::DecodeFrom(const Slice& src) {
         }
         break;
 
-      case kCompactPointer:
+      case kCompactCursor:
         if (GetLevel(&input, &level, &msg) &&
             GetInternalKey(&input, &key)) {
           // we don't use compact pointers anymore,
@@ -520,7 +520,7 @@ Status VersionEdit::DecodeFrom(const Slice& src) {
           // in manifest
         } else {
           if (!msg) {
-            msg = "compaction pointer";
+            msg = "compaction cursor";
           }
         }
         break;

@@ -130,6 +130,20 @@ class VersionStorageInfo {
 
   void AddFile(int level, FileMetaData* f);
 
+  // Resize/Initialize the space for compact_cursors_by_level_
+  void ResizeCompactCursors(int level) {
+    compact_cursors_by_level_.resize(level, InternalKey());
+  }
+
+  const std::vector<InternalKey>& GetLeveledCompactCursors() const {
+    return compact_cursors_by_level_;
+  }
+
+  // REQUIRES: ResizeCompactCursors has been called
+  void AddCursorForOneLevel(int level, const InternalKey& largest_compact_key) {
+    compact_cursors_by_level_[level] = largest_compact_key;
+  }
+
   void ReserveBlob(size_t size) { blob_files_.reserve(size); }
 
   void AddBlobFile(std::shared_ptr<BlobFileMetaData> blob_file_meta);
@@ -656,6 +670,9 @@ class VersionStorageInfo {
   std::vector<int> compaction_level_;
   int l0_delay_trigger_count_ = 0;  // Count used to trigger slow down and stop
                                     // for number of L0 files.
+
+  // Compact cursors for round-robin compactions
+  std::vector<InternalKey> compact_cursors_by_level_;
 
   // the following are the sampled temporary stats.
   // the current accumulated size of sampled files.

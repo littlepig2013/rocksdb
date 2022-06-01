@@ -1796,6 +1796,7 @@ VersionStorageInfo::VersionStorageInfo(
       compaction_score_(num_levels_),
       compaction_level_(num_levels_),
       l0_delay_trigger_count_(0),
+      compact_cursors_by_level_(num_levels_),
       accumulated_file_size_(0),
       accumulated_raw_key_size_(0),
       accumulated_raw_value_size_(0),
@@ -3193,6 +3194,73 @@ void SortFileByOverlappingRatio(
                      file_to_order[f2.file->fd.GetNumber()];
             });
 }
+
+void MoveFileByRoundRobin(const InternalKeyComparator& icmp,
+                          std::vector<InternalKey>* compact_cursors_by_level,
+                          bool level0_non_overlapping, int level,
+                          std::vector<Fsize>* temp) {
+  if (level == 0 && !level0_non_overlapping) {
+    // Using kOldestSmallestSeqFirst when level === 0, since the
+    // files may overlap (not fully sorted)
+    std::sort(temp->begin(), temp->end(),
+              [](const Fsize& f1, const Fsize& f2) -> bool {
+                return f1.file->fd.smallest_seqno < f2.file->fd.smallest_seqno;
+              });
+    return;
+  }
+
+  bool should_move_files =
+      compact_cursors_by_level->at(level).Valid() && temp->size() > 1;
+
+  std::vector<Fsize>::iterator level_compact_cursor_iter;  
+  if (should_move_files) {
+    // Find the file of which the smallest key is larger than or equal to
+    // the cursor (the smallest key in the successor file of the last
+    // chosen file), skip this if the cursor is invalid or there is only
+    // one file in this level
+    level_compact_cursor_iter = std::lower_bound(
+        temp->begin(), temp->end(), compact_cursors_by_level->at(level),
+        [&](const Fsize& f, const InternalKey& cursor) -> bool {
+          return icmp.Compare(cursor, f.file->smallest) >= 0;
+        });
+    should_move_files = level_compact_cursor_iter != temp->end();
+  }
+  if (should_move_files) {
+    // Update compact cursor with the smallest key in the successor file
+    if (std::next(level_compact_cursor_iter) != temp->end()) {
+      compact_cursors_by_level->at(level) =
+          level_compact_cursor_iter->file->smallest;
+    } else {
+      // Reset using the smalleast key of the first file
+      compact_cursors_by_level->at(level) = temp->front().file->smallest;
+    }
+
+    // Construct a local temporary vector
+    std::vector<Fsize> local_temp;
+    local_temp.reserve(temp->size());
+    // Move the selected File into the first position and its successors
+    // into the second, third, ..., positions
+    for (auto iter = level_compact_cursor_iter; iter != temp->end(); iter++) {
+      local_temp.push_back(*iter);
+    }
+    // Move the origin predecessors of the selected file in a round-robin
+    // manner
+    for (auto iter = temp->begin(); iter != level_compact_cursor_iter; iter++) {
+      local_temp.push_back(*iter);
+    }
+    // Replace all the items in temp
+    for (size_t i = 0; i < local_temp.size(); i++) {
+      temp->at(i) = local_temp[i];
+    }
+  } else if (temp->size() >= 2) {
+    // Do not move files if the stored cursor is invalid, or cannot find
+    // file with smallest key larger than or equal to the cursor. Rest
+    // the cursor as the smalleast key of the second file.
+    compact_cursors_by_level->at(level) = temp->at(1).file->smallest;
+  } else {
+    compact_cursors_by_level->at(level) = InternalKey();
+  }
+}
 }  // namespace
 
 void VersionStorageInfo::UpdateFilesByCompactionPri(
@@ -3244,6 +3312,10 @@ void VersionStorageInfo::UpdateFilesByCompactionPri(
         SortFileByOverlappingRatio(*internal_comparator_, files_[level],
                                    files_[level + 1], ioptions.clock, level,
                                    num_non_empty_levels_, options.ttl, &temp);
+        break;
+      case kRoundRobin:
+        MoveFileByRoundRobin(*internal_comparator_, &compact_cursors_by_level_,
+                             level0_non_overlapping_, level, &temp);
         break;
       default:
         assert(false);
@@ -5280,6 +5352,7 @@ Status VersionSet::ReduceNumberOfLevels(const std::string& dbname,
   delete[] vstorage -> files_;
   vstorage->files_ = new_files_list;
   vstorage->num_levels_ = new_levels;
+  vstorage->ResizeCompactCursors(new_levels);
 
   MutableCFOptions mutable_cf_options(*options);
   VersionEdit ve;

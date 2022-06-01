@@ -35,7 +35,7 @@ enum Tag : uint32_t {
   kLogNumber = 2,
   kNextFileNumber = 3,
   kLastSequence = 4,
-  kCompactPointer = 5,
+  kCompactCursor = 5,
   kDeletedFile = 6,
   kNewFile = 7,
   // 8 was used for large value refs
